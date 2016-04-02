@@ -3,9 +3,7 @@
 
     <string name="app_name">Super Mario Wallpaper</string>
     <string name="wallpaper_description">My cool super mario wallpaper :D</string>
-    <string name="weather">Weather</string>
-    <string name="getupdates">Get Updates</string>
     <string name="getsunupdates">Get Sun Times</string>
-    <string name="weatherupdates">Start Updates</string>
-    <string name="stopupdates">Stop Updates</string>
+    <string name="startupdates">Start GPS Updates</string>
+    <string name="stopupdates">Stop GPS Updates</string>
 </resources>

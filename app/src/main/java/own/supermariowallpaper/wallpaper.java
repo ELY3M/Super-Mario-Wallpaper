@@ -9,6 +9,10 @@ import org.andengine.engine.options.EngineOptions;
 import org.andengine.engine.options.ScreenOrientation;
 import org.andengine.engine.options.resolutionpolicy.FillResolutionPolicy;
 import org.andengine.engine.options.resolutionpolicy.RatioResolutionPolicy;
+import org.andengine.entity.Entity;
+import org.andengine.entity.particle.BatchedPseudoSpriteParticleSystem;
+import org.andengine.entity.particle.emitter.RectangleParticleEmitter;
+import org.andengine.entity.particle.initializer.ScaleParticleInitializer;
 import org.andengine.opengl.vbo.VertexBufferObjectManager;
 import org.andengine.entity.scene.background.AutoParallaxBackground;
 import org.andengine.entity.scene.background.ParallaxBackground.ParallaxEntity;
@@ -32,10 +36,19 @@ import org.andengine.opengl.view.ConfigChooser;
 import org.andengine.opengl.view.EngineRenderer;
 import org.andengine.opengl.view.IRendererListener;
 import org.andengine.opengl.util.GLState;
+import org.andengine.engine.Engine.EngineLock;
 import org.andengine.util.debug.Debug;
 
+import android.app.Service;
 import android.app.WallpaperManager;
+import android.content.Context;
+import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.opengl.GLES20;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
 import android.text.format.Time;
 import android.util.Log;
 import android.widget.Toast;
@@ -52,23 +65,42 @@ import com.google.android.gms.location.LocationListener;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 
+import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.TimeZone;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import net.e175.klaus.solarpositioning.*;
 
 public class wallpaper extends BaseLiveWallpaperService implements ConnectionCallbacks, OnConnectionFailedListener, LocationListener {
 
+
     private static final String TAG = "mario wallpaper";
-    private GoogleApiClient GoogleApiClient;
-    public static final long GPSUPDATE_INTERVAL_IN_MILLISECONDS = 10000;
-    public static final long FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = GPSUPDATE_INTERVAL_IN_MILLISECONDS / 2;
-    private LocationRequest mLocationRequest;
-    private Location mCurrentLocation;
-    private Boolean mRequestingUpdates;
-    double mylat = 0.0;
-    double mylon = 0.0;
-    double ZENITH = 0.0;
+    static GoogleApiClient GoogleApiClient;
+    public static final long UPDATE_INTERVAL_IN_MILLISECONDS = 90000;
+    ///public static final long UPDATE_INTERVAL_IN_MILLISECONDS = 1800000;
+    public static final long FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = UPDATE_INTERVAL_IN_MILLISECONDS / 2;
+    public LocationRequest mLocationRequest;
+    public double ZENITH = 0.0;
+
+    public Location mCurrentLocation;
+    public double mylat = 0.0;
+    public double mylon = 0.0;
+
+    public String url = "http://forecast.weather.gov/MapClick.php?";
+    public String finalurl = "setup";
+    public handlejson obj;
+
+    public static String mytemp = "0";
+    public static String myicon = "unknown";
+    public static String finalicon = "unknown";
+    public static String myweather = "Light Rain";
+    ///public static String myweather = "unknown";
+    public static int updatecount = 0;
+
+
 
     /////gps stuff////
     private void initializeGoogleAPI() {
@@ -84,24 +116,23 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
     }
 
 
-
     private void createLocationRequest() {
         mLocationRequest = new LocationRequest();
-        mLocationRequest.setInterval(GPSUPDATE_INTERVAL_IN_MILLISECONDS);
+        mLocationRequest.setInterval(UPDATE_INTERVAL_IN_MILLISECONDS);
         mLocationRequest.setFastestInterval(FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS);
         mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
     }
 
     private void startUpdates() {
         LocationServices.FusedLocationApi.requestLocationUpdates(GoogleApiClient, mLocationRequest, this);
-        mRequestingUpdates = true;
+        getApplicationContext().startService(new Intent(getApplicationContext(), WeatherService.class));
         //Toast.makeText(this, "GPS update started", Toast.LENGTH_SHORT).show();
 
     }
 
     private void stopUpdates() {
         LocationServices.FusedLocationApi.removeLocationUpdates(GoogleApiClient, this);
-        mRequestingUpdates = false;
+        getApplicationContext().stopService(new Intent(getApplicationContext(), WeatherService.class));
         //Toast.makeText(this, "GPS update stopped", Toast.LENGTH_SHORT).show();
 
     }
@@ -118,16 +149,20 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
     public void onConnected(Bundle connectionHint) {
         Debug.i(TAG, "Connected to GoogleApiClient");
         if (mCurrentLocation == null) {
+            Debug.i(TAG, "mCurrentLocation == null");
+            mCurrentLocation = LocationServices.FusedLocationApi.getLastLocation(GoogleApiClient);
+        } else {
+            Debug.i(TAG, "mCurrentLocation not null");
             mCurrentLocation = LocationServices.FusedLocationApi.getLastLocation(GoogleApiClient);
             mylat = mCurrentLocation.getLatitude();
             mylon = mCurrentLocation.getLongitude();
             //make sure to setup latlon with weather url
             //String finalurl = url + mylat + "," + mylon + ".json";
             Debug.i(TAG, "mario onConnected lat: " + mylat + " lon: " + mylon);
+
         }
-        if (mRequestingUpdates) {
-            startUpdates();
-        }
+
+        startUpdates();
     }
 
 
@@ -153,13 +188,318 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
         Debug.i(TAG, "mario Connection failed: ConnectionResult.getErrorCode() = " + result.getErrorCode());
     }
 
+
+    //google gps service
+    public static class WeatherService extends Service implements ConnectionCallbacks, OnConnectionFailedListener, LocationListener {
+        private GoogleApiClient GoogleApiClient;
+        public static final long GPSUPDATE_INTERVAL_IN_MILLISECONDS = 1800000;
+        //public static final long GPSUPDATE_INTERVAL_IN_MILLISECONDS = 60000;
+        public static final long FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = GPSUPDATE_INTERVAL_IN_MILLISECONDS / 2;
+        public final static String REQUESTING_UPDATES_KEY = "requesting-updates-key";
+        public final static String LOCATION_KEY = "location-key";
+        public LocationRequest mLocationRequest;
+        public Location mCurrentLocation;
+
+        public String url = "http://forecast.weather.gov/MapClick.php?";
+        public String finalurl = "setup";
+        public handlejson obj;
+        public double lat = 0.0;
+        public double lon = 0.0;
+        public String mylat = "0.0";
+        public String mylon = "0.0";
+        //public static String mytemp = "0";
+        //public static String myicon = "unknown";
+        //public static String finalicon = "unknown";
+        //public static String myweather = "unknown";
+        //public int updatecount = 0;
+
+
+        private Handler handler = new Handler();
+        private Runnable runn = new Runnable() {
+            @Override
+            public void run() {
+                Log.i(TAG, "update service ran");
+                //You can do the processing here update the widget/remote views.
+                weatherupdate();
+                handler.postDelayed(runn, UPDATE_INTERVAL_IN_MILLISECONDS);
+            }
+        };
+
+        @Override
+        public IBinder onBind(Intent intent) {
+            return null;
+        }
+
+
+        @Override
+        public void onStart(Intent intent, int startId) {
+            super.onStart(intent, startId);
+            Log.i(TAG, "onStart()");
+            GoogleApiClient.connect();
+        }
+
+        /*
+        @Override
+        public void onDestroy() {
+            stopUpdates();
+            Log.i(TAG, "Service.onDestroy()");
+            super.onDestroy();
+        }
+        */
+
+        public void onDestroy() {
+            super.onDestroy();
+            stopUpdates();
+            if(handler!=null){
+                handler.removeCallbacks(runn);
+            }
+            handler = null;
+        }
+
+
+        public int onStartCommand(Intent intent, int flags, int startId) {
+            Log.i(TAG, "Service.onStartCommand()");
+            initializeGoogleAPI();
+            handler.post(runn);
+            return super.onStartCommand(intent, flags, startId);
+        }
+
+
+        private void initializeGoogleAPI() {
+            Log.i(TAG, "initializeGoogleAPI()");
+            if (GooglePlayServicesUtil.isGooglePlayServicesAvailable(this)
+                    == ConnectionResult.SUCCESS) {
+                GoogleApiClient = new GoogleApiClient.Builder(this)
+                        .addConnectionCallbacks(this)
+                        .addOnConnectionFailedListener(this)
+                        .addApi(LocationServices.API)
+                        .build();
+                createLocationRequest();
+            }
+        }
+
+
+        private void createLocationRequest() {
+            mLocationRequest = new LocationRequest();
+            mLocationRequest.setInterval(GPSUPDATE_INTERVAL_IN_MILLISECONDS);
+            mLocationRequest.setFastestInterval(FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS);
+            mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        }
+
+        private void startUpdates() {
+            Log.i(TAG, "startUpdates()");
+            LocationServices.FusedLocationApi.requestLocationUpdates(GoogleApiClient, mLocationRequest, this);
+
+        }
+
+        private void stopUpdates() {
+            Log.i(TAG, "stopUpdates()");
+            LocationServices.FusedLocationApi.removeLocationUpdates(GoogleApiClient, this);
+
+        }
+
+        @Override
+        public void onConnected(Bundle connectionHint) {
+            Log.i(TAG, "Connected to GoogleApiClient");
+            if (mCurrentLocation == null) {
+                Log.i(TAG, "mCurrentLocation == null");
+                mCurrentLocation = LocationServices.FusedLocationApi.getLastLocation(GoogleApiClient);
+            } else {
+                Log.i(TAG, "mCurrentLocation not null");
+                mCurrentLocation = LocationServices.FusedLocationApi.getLastLocation(GoogleApiClient);
+                lat = mCurrentLocation.getLatitude();
+                lon = mCurrentLocation.getLongitude();
+                mylat = String.valueOf(lat);
+                mylon = String.valueOf(lon);
+                //make sure to setup latlon with weather url
+                finalurl = url + "lat=" + mylat + "&lon=" + mylon + "&FcstType=json";
+                Log.i(TAG, "onConnected finalurl: " + finalurl);
+                Log.i(TAG, "onConnected lat: " + mylat + " lon: " + mylon);
+                ///weatherupdate();
+            }
+
+            startUpdates();
+        }
+
+
+        @Override
+        public void onLocationChanged(Location location) {
+            mCurrentLocation = location;
+            lat = mCurrentLocation.getLatitude();
+            lon = mCurrentLocation.getLongitude();
+            mylat = String.valueOf(lat);
+            mylon = String.valueOf(lon);
+            //make sure to setup latlon with weather url
+            finalurl = url + "lat=" + mylat + "&lon=" + mylon + "&FcstType=json";
+            Log.i(TAG, "onLocationChanged finalurl: " + finalurl);
+            Log.i(TAG, "onLocationChanged lat: " + mylat + " lon: " + mylon);
+            ///weatherupdate();
+        }
+
+        @Override
+        public void onConnectionSuspended(int cause) {
+            Log.i(TAG, "Connection suspended");
+            GoogleApiClient.connect();
+        }
+
+        @Override
+        public void onConnectionFailed(ConnectionResult result) {
+            Log.i(TAG, "Connection failed: ConnectionResult.getErrorCode() = " + result.getErrorCode());
+        }
+
+
+        public void weatherupdate() {
+            ///get weather////
+            Log.i(TAG, "weatherupdate() started");
+            if (isOnline(getApplicationContext())) {
+                //if (checknet()) {
+                if (GoogleApiClient.isConnected()) {
+                    ////if (check for location) {
+                    finalurl = url + "lat=" + mylat + "&lon=" + mylon + "&FcstType=json";
+                    Log.i(TAG, "finalurl: " + finalurl);
+                    obj = new handlejson(finalurl);
+                    obj.fetchJSON();
+                    while (obj.parsingComplete) ;
+                    mytemp = obj.getTemp();
+                    myicon = obj.getIcon();
+                    myweather = obj.getWeather();
+                    if (myweather.isEmpty()) {
+                        Log.i(TAG, "myweather is null!");
+                        Log.i(TAG, "setting myweather to unknown");
+                        myweather = "unknown";
+                    }
+                    Log.i(TAG, "mytemp: " + mytemp);
+                    Log.i(TAG, "myicon: " + myicon);
+                    Log.i(TAG, "myweather: " + myweather);
+                    Pattern pattern = Pattern.compile("(.*?)(.png|.jpg|.gif)");
+                    Matcher geticon = pattern.matcher(myicon);
+                    while (geticon.find()) {
+                        finalicon = geticon.group(1);
+                    }
+                    double finaltemp = Math.ceil(Double.valueOf(mytemp));
+                    mytemp = String.valueOf((int) finaltemp) + "°F";
+
+                    Log.i(TAG, "finalicon: " + finalicon);
+                    myicon = finalicon;
+                    Log.i(TAG, "myicon (final): " + myicon);
+                    SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+                    Calendar c = Calendar.getInstance();
+                    String mytimestamp = timestamp.format(c.getTime());
+                    updatecount++;
+                    Log.i(TAG, "Last Update: " + mytimestamp + "\nUpdate Count: " + updatecount);
+                    ///Toast.makeText(getApplicationContext(), "Weather Update: " + mytimestamp + "  Update Count: " + updatecount, Toast.LENGTH_SHORT).show();
+                    ///`getcityname(lat,lon);
+                } else { ///internet connection
+                    SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+                    Calendar c = Calendar.getInstance();
+                    String mytimestamp = timestamp.format(c.getTime());
+                    updatecount++;
+                    Log.i(TAG, "Failed Update (Google): " + mytimestamp + "\nUpdate Count: " + updatecount);
+                }
+
+            } else { //internet check
+                SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+                Calendar c = Calendar.getInstance();
+                String mytimestamp = timestamp.format(c.getTime());
+                updatecount++;
+                Log.i(TAG, "Failed Update (Offline): " + mytimestamp + "\nUpdate Count: " + updatecount);
+            }
+
+        }
+
+
+        public static boolean isOnline(Context context) {
+            ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo netInfo = cm.getActiveNetworkInfo();
+            if (netInfo != null && netInfo.isConnected()) {
+                Log.i(TAG, "network state = true");
+                return true;
+            }
+            return false;
+        }
+
+
+
+    }
+
+/*
+    public void weatherupdate() {
+        ///get weather////
+        Log.i(TAG, "weatherupdate() started");
+        if (isOnline(getApplicationContext())) {
+            //if (checknet()) {
+            if (GoogleApiClient.isConnected()) {
+                ////if (check for location) {
+                finalurl = url + "lat=" + mylat + "&lon=" + mylon + "&FcstType=json";
+                Log.i(TAG, "finalurl: " + finalurl);
+                obj = new handlejson(finalurl);
+                obj.fetchJSON();
+                while (obj.parsingComplete) ;
+                mytemp = obj.getTemp();
+                myicon = obj.getIcon();
+                myweather = obj.getWeather();
+                if (myweather.isEmpty()) {
+                    Log.i(TAG, "myweather is null!");
+                    Log.i(TAG, "setting myweather to unknown");
+                    myweather = "unknown";
+                }
+                Log.i(TAG, "mytemp: " + mytemp);
+                Log.i(TAG, "myicon: " + myicon);
+                Log.i(TAG, "myweather: " + myweather);
+                Pattern pattern = Pattern.compile("(.*?)(.png|.jpg|.gif)");
+                Matcher geticon = pattern.matcher(myicon);
+                while (geticon.find()) {
+                    finalicon = geticon.group(1);
+                }
+                double finaltemp = Math.ceil(Double.valueOf(mytemp));
+                mytemp = String.valueOf((int) finaltemp) + "°F";
+
+                Log.i(TAG, "finalicon: " + finalicon);
+                myicon = finalicon;
+                Log.i(TAG, "myicon (final): " + myicon);
+                SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+                Calendar c = Calendar.getInstance();
+                String mytimestamp = timestamp.format(c.getTime());
+                updatecount++;
+                Log.i(TAG, "Last Update: " + mytimestamp + "\nUpdate Count: " + updatecount);
+                ///Toast.makeText(getApplicationContext(), "Weather Update: " + mytimestamp + "  Update Count: " + updatecount, Toast.LENGTH_SHORT).show();
+                ///`getcityname(lat,lon);
+            } else { ///internet connection
+                SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+                Calendar c = Calendar.getInstance();
+                String mytimestamp = timestamp.format(c.getTime());
+                updatecount++;
+                Log.i(TAG, "Failed Update (Google): " + mytimestamp + "\nUpdate Count: " + updatecount);
+            }
+
+        } else { //internet check
+            SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
+            Calendar c = Calendar.getInstance();
+            String mytimestamp = timestamp.format(c.getTime());
+            updatecount++;
+            Log.i(TAG, "Failed Update (Offline): " + mytimestamp + "\nUpdate Count: " + updatecount);
+        }
+
+    }
+
+
+    public static boolean isOnline(Context context) {
+        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkInfo netInfo = cm.getActiveNetworkInfo();
+        if (netInfo != null && netInfo.isConnected()) {
+            Log.i(TAG, "network state = true");
+            return true;
+        }
+        return false;
+    }
+*/
+
     @Override
     public void onCreate() {
         ////gps stuff
         //start GPS
         initializeGoogleAPI();
         GoogleApiClient.connect();
-        mRequestingUpdates = true;
         Debug.i(TAG, "mario gps started: " + mylat + " lon: " + mylon);
         super.onCreate();
     }
@@ -167,8 +507,8 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
     private int CAMERA_WIDTH = 600;
     private int CAMERA_HEIGHT = 800;
 
-    private Camera mCamera;
-    private Scene mScene;
+    //private Camera mCamera;
+    //private Scene mScene;
 
     BitmapTextureAtlas skyTexture;
     ITextureRegion skyRegion;
@@ -187,6 +527,53 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
     BitmapTextureAtlas groundTexture;
     ITextureRegion groundRegion;
 
+    //weather
+    BitmapTextureAtlas cloud1Texture;
+    ITextureRegion cloud1Region;
+    BitmapTextureAtlas cloud2Texture;
+    ITextureRegion cloud2Region;
+    BitmapTextureAtlas cloud3Texture;
+    ITextureRegion cloud3Region;
+
+    //rain
+    BitmapTextureAtlas rain1Texture;
+    ITextureRegion rain1Region;
+    BitmapTextureAtlas rain2Texture;
+    ITextureRegion rain2Region;
+    BitmapTextureAtlas rain3Texture;
+    ITextureRegion rain3Region;
+    BitmapTextureAtlas rain4Texture;
+    ITextureRegion rain4Region;
+
+    BitmapTextureAtlas drizzleTexture;
+    ITextureRegion drizzleRegion;
+
+    //snow
+    BitmapTextureAtlas snow1Texture;
+    ITextureRegion snow1Region;
+    BitmapTextureAtlas snow2Texture;
+    ITextureRegion snow2Region;
+    BitmapTextureAtlas snow3Texture;
+    ITextureRegion snow3Region;
+    BitmapTextureAtlas snow4Texture;
+    ITextureRegion snow4Region;
+    BitmapTextureAtlas snow5Texture;
+    ITextureRegion snow5Region;
+    BitmapTextureAtlas snow6Texture;
+    ITextureRegion snow6Region;
+    BitmapTextureAtlas snow7Texture;
+    ITextureRegion snow7Region;
+
+    BitmapTextureAtlas icepelletTexture;
+    ITextureRegion icepelletRegion;
+
+    BitmapTextureAtlas hailTexture;
+    ITextureRegion hailRegion;
+
+    BitmapTextureAtlas windTexture;
+    ITextureRegion windRegion;
+
+
     double astronomicalrise = 0;
     double nauticalrise = 0;
     double civilrise = 0;
@@ -200,15 +587,17 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
 
     @Override
     public EngineOptions onCreateEngineOptions() {
-        this.mCamera = new Camera(0, 0, CAMERA_WIDTH, CAMERA_HEIGHT);
+        final Camera mCamera = new Camera(0, 0, CAMERA_WIDTH, CAMERA_HEIGHT);
         ///return new EngineOptions(true, ScreenOrientation.PORTRAIT_FIXED, new RatioResolutionPolicy(CAMERA_WIDTH, CAMERA_HEIGHT), this.mCamera);
-        return new EngineOptions(true, ScreenOrientation.PORTRAIT_FIXED, new FillResolutionPolicy(), this.mCamera);
+        return new EngineOptions(true, ScreenOrientation.PORTRAIT_FIXED, new FillResolutionPolicy(), mCamera);
 
     }
 
     @Override
     public void onCreateResources(OnCreateResourcesCallback pOnCreateResourcesCallback) {
         Debug.i(TAG, "mario gps in res: " + mylat + " lon: " + mylon);
+        Debug.i(TAG, "mario weather in res: temp:" + mytemp + " icon: " + myicon + " weather: " + myweather);
+
         BitmapTextureAtlasTextureRegionFactory.setAssetBasePath("gfx/");
 
         this.skyTexture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
@@ -233,6 +622,34 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
         this.starsRegion = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.starsTexture, this, "stars.png", 0, 0);
         starsTexture.load();
 
+        //weather
+
+        //clouds
+        this.cloud1Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.cloud1Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.cloud1Texture, this, "cloud1.png", 0, 0);
+        cloud1Texture.load();
+        this.cloud2Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.cloud2Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.cloud2Texture, this, "cloud2.png", 0, 0);
+        cloud2Texture.load();
+        this.cloud3Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.cloud3Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.cloud3Texture, this, "cloud3.png", 0, 0);
+        cloud3Texture.load();
+
+        //rain
+        this.rain1Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.rain1Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.rain1Texture, this, "rain1.png", 0, 0);
+        rain1Texture.load();
+        this.rain2Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.rain2Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.rain2Texture, this, "rain2.png", 0, 0);
+        rain2Texture.load();
+        this.rain3Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.rain3Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.rain3Texture, this, "rain3.png", 0, 0);
+        rain3Texture.load();
+        this.rain4Texture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
+        this.rain4Region = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.rain4Texture, this, "rain4.png", 0, 0);
+        rain4Texture.load();
+
+
         /*
         this.groundTexture = new BitmapTextureAtlas(this.getTextureManager(), 1080, 1920);
         this.groundRegion = BitmapTextureAtlasTextureRegionFactory.createFromAsset(this.groundTexture, this, "ground.png", 0, 0);
@@ -249,12 +666,17 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
         pOnCreateResourcesCallback.onCreateResourcesFinished();
     }
 
+
+
+
     @Override
     public void onCreateScene(OnCreateSceneCallback pOnCreateSceneCallback) {
         this.mEngine.registerUpdateHandler(new FPSLogger());
         Debug.i(TAG, "mario gps in scene: " + mylat + " lon: " + mylon);
-        mScene = new Scene();
+        Debug.i(TAG, "mario weather in scene: temp:" + mytemp + " icon: " + myicon + " weather: " + myweather);
+        final Scene mScene = new Scene();
         final AutoParallaxBackground autoScrollBackground = new AutoParallaxBackground(0, 0, 0, 5);
+
 
 
         mScene.registerUpdateHandler(new TimerHandler(10.0f, true, new ITimerCallback() {
@@ -264,6 +686,8 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
             public void onTimePassed(final TimerHandler pTimerHandler) {
 
                 Debug.i(TAG, "mario gps in onupdate: " + mylat + " lon: " + mylon);
+                Debug.i(TAG, "mario weather in onupdate: temp:" + mytemp + " icon: " + myicon + " weather: " + myweather);
+
                 //Debug.i(TAG, "mario mCurrentlocation in onupdate: " + mCurrentLocation);
 
 
@@ -279,7 +703,6 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
                             11); // avg. air temperature
                     Debug.i(TAG, "mario SPA (more acc but slow): " + solarposition2.getZenithAngle());
                     ZENITH = solarposition2.getZenithAngle();
-
 
 
                     if (ZENITH < 90.8) {
@@ -311,166 +734,74 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
                     }
 
 
+                    //rain
+                    Pattern rainpattern = Pattern.compile("(.*?)(Rain)(.*?)");
+                    Matcher getrain = rainpattern.matcher(myweather);
+                    final BatchedPseudoSpriteParticleSystem rain1particle = new BatchedPseudoSpriteParticleSystem(new RectangleParticleEmitter(CAMERA_WIDTH / 2, -100, CAMERA_WIDTH, 1), 6, 10, 500, rain1Region, wallpaper.this.getVertexBufferObjectManager());
+                    rain1particle.setBlendFunction(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE);
+                    rain1particle.addParticleInitializer(new VelocityParticleInitializer(0, 0, 60, 90));
+                    rain1particle.addParticleInitializer(new AccelerationParticleInitializer(0, 103));
+                    ///particleSystem.addParticleInitializer(new RotationParticleInitializer(0.0f, 360.0f));
+                    rain1particle.addParticleInitializer(new ExpireParticleInitializer<Entity>(11.5f));
+                    //enlarge bit
+                    rain1particle.addParticleInitializer(new ScaleParticleInitializer<Entity>(3.0f, 3.0f));
 
 
-                    /*
-                    //String sunrisetime;
-                    //String sunsettime;
+                    if (getrain.find()) {
+                        Debug.i(TAG, "mario raining...");
+                        mScene.attachChild(rain1particle);
+                    } else {
+                        Debug.i(TAG, "mario stopped raining...");
+                        /*
+                        BatchedPseudoSpriteParticleSystem rain1particle = new BatchedPseudoSpriteParticleSystem(new RectangleParticleEmitter(CAMERA_WIDTH / 2, -100, CAMERA_WIDTH, 1), 6, 10, 500, rain1Region, wallpaper.this.getVertexBufferObjectManager());
+                        rain1particle.removeParticleInitializer(new VelocityParticleInitializer(0, 0, 60, 90));
+                        rain1particle.removeParticleInitializer(new AccelerationParticleInitializer(0, 103));
+                        ///particleSystem.addParticleInitializer(new RotationParticleInitializer(0.0f, 360.0f));
+                        rain1particle.removeParticleInitializer(new ExpireParticleInitializer<Entity>(11.5f));
+                        //enlarge bit
+                        rain1particle.removeParticleInitializer(new ScaleParticleInitializer<Entity>(3.0f, 3.0f));
+                        */
+                        //rain1particle.setVisible(false);
+                        //rain1particle.setIgnoreUpdate(true);
 
-                    //final String tz = Time.getCurrentTimezone();
-                    //final SunCalculator calculator = new SunCalculator(mCurrentLocation, tz);
-                    //final Calendar now = Calendar.getInstance();
+                        //mScene.attachChild(rain1particle);
+                        //mScene.detachChild(rain1particle);
+                        //rain1particle.dispose();
+                        //rain1particle = null;
+                        ///mScene.detachChild(rain1particle);
 
-                    final double sunrisea = calculator.computeSunriseTime(SunCalculator.ZENITH_ASTRONOMICAL, now);
-                    astronomicalrise = SunCalculator.timeToDayFraction(sunrisea);
-
-                    final double sunrisen = calculator.computeSunriseTime(SunCalculator.ZENITH_NAUTICAL, now);
-                    nauticalrise = SunCalculator.timeToDayFraction(sunrisen);
-
-                    final double sunrisec = calculator.computeSunriseTime(SunCalculator.ZENITH_CIVIL, now);
-                    civilrise = SunCalculator.timeToDayFraction(sunrisec);
-
-                    final double sunriseo = calculator.computeSunriseTime(SunCalculator.ZENITH_OFFICIAL, now);
-                    sunrise = SunCalculator.timeToDayFraction(sunriseo);
-
-                    final double sunseto = calculator.computeSunsetTime(SunCalculator.ZENITH_OFFICIAL, now);
-                    sunset = SunCalculator.timeToDayFraction(sunseto);
-
-                    final double sunsetc = calculator.computeSunsetTime(SunCalculator.ZENITH_CIVIL, now);
-                    civilset = SunCalculator.timeToDayFraction(sunsetc);
-
-                    final double sunsetn = calculator.computeSunsetTime(SunCalculator.ZENITH_NAUTICAL, now);
-                    nauticalset = SunCalculator.timeToDayFraction(sunsetn);
-
-                    final double sunseta = calculator.computeSunsetTime(SunCalculator.ZENITH_ASTRONOMICAL, now);
-                    astronomicalset = SunCalculator.timeToDayFraction(sunseta);
-
-
-                    int currenthr = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
-                    int currentmin = Calendar.getInstance().get(Calendar.MINUTE);
-                    currenttimeinfraction = timetofraction(currenthr, currentmin);
-
-                    sunrisetime = SunCalculator.timeToString(sunriseo);
-                    sunsettime = SunCalculator.timeToString(sunseto);
-                    Debug.i(TAG, "mario current time: " + currenthr + ":" + currentmin);
-                    //Debug.i(TAG, "mario sunrise/set in fraction: " + sunrise + "  " + sunset);
-                    Debug.i(TAG, "mario sunrise/set: " + sunrisetime + "  " + sunsettime);
-                    Debug.i(TAG, "mario current time in fraction: " + currenttimeinfraction);
-                    Debug.i(TAG, "mario astronomicalrise in fraction: " + astronomicalrise);
-                    Debug.i(TAG, "mario nauticalrise in fraction: " + nauticalrise);
-                    Debug.i(TAG, "mario civilrise in fraction: " + civilrise);
-                    Debug.i(TAG, "mario sunrise/set in fraction: " + sunrise + "  " + sunset);
-                    Debug.i(TAG, "mario civilset in fraction: " + civilset);
-                    Debug.i(TAG, "mario nauticalset in fraction: " + nauticalset);
-                    Debug.i(TAG, "mario astronomicalset in fraction: " + astronomicalset);
+                        final EngineLock engineLock = mEngine.getEngineLock();
+                        engineLock.lock();
+                        mScene.detachChild(rain1particle);
+                        rain1particle.detachSelf();
+                        rain1particle.dispose();
+                        //rain1particle = null;
+                        engineLock.unlock();
 
 
-                    if (sunrise <= currenttimeinfraction && sunset >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario day");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.skyRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-                    //else {
-                    //    Debug.i(TAG, "mario night");
-                    //    autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nightRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    //    autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    //}
 
-                    if (astronomicalrise <= currenttimeinfraction && nauticalrise >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario astronomicalrise");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.astronomicalRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
+                        mEngine.runOnUpdateThread(new Runnable() {
+                            @Override
+                                public void run () {
+                                Debug.i(TAG, "trying to stop raining...");
+                                    mScene.detachChild(rain1particle);
+                                }
+                        });
+
 
                     }
-
-                    if (nauticalrise <= currenttimeinfraction && civilrise >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario nauticalrise");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nauticalRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsnauticalRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-
-                    if (civilrise <= currenttimeinfraction && sunrise >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario civilrise");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.civilRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        //autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-
-
-                    if (sunset <= currenttimeinfraction && civilset >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario civilset");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.civilRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        //autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-
-                    if (civilset <= currenttimeinfraction && nauticalset >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario nauticalset");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nauticalRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsnauticalRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-
-                    if (nauticalset <= currenttimeinfraction && astronomicalset >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario astronomicalset");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.astronomicalRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-
-                    if (astronomicalset <= currenttimeinfraction) {
-                        Debug.i(TAG, "mario night");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nightRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-                    if (currenttimeinfraction >= 0 && astronomicalrise >= currenttimeinfraction) {
-                        Debug.i(TAG, "mario night");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nightRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-
-                    }
-                    */
-
-                    /*
-                    //sunset after midnight - common in alaska
-                    if (sunset >= 0 && currenttimeinfraction <= 0) {
-                        Debug.i(TAG, "mario day - before midnight sunset");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.skyRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-                    if (sunset >= 0 && currenttimeinfraction >= 0) {
-                        Debug.i(TAG, "mario night - after midnight sunset");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nightRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-                    */
-
-
-                    /*
-                    TimeZone timeZone = TimeZone.getTimeZone(now.getTimeZone().getID());
-                    //SunriseSunset ss = new SunriseSunset(mCurrentLocation.getLatitude(), mCurrentLocation.getLongitude(), now.getTime(), timeZone.getOffset(now.getTimeInMillis()) / 1000 / 60 / 60);
-                    SunriseSunset ss = new SunriseSunset(mCurrentLocation.getLatitude(), mCurrentLocation.getLongitude(), now.getTime(), 0);
-                    Debug.i(TAG, "mario - sun up: " + ss.isSunUp() + " sun down: " + ss.isSunDown());
-
-                    if (ss.isSunUp()) {
-                        Debug.i(TAG, "mario day - sun is up all day");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.skyRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-
-                    if (ss.isSunDown()) {
-                        Debug.i(TAG, "mario night - sun is down all day");
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(0.0f, new Sprite(0, -341, wallpaper.this.nightRegion, wallpaper.this.getVertexBufferObjectManager())));
-                        autoScrollBackground.attachParallaxEntity(new ParallaxEntity(-5.0f, new Sprite(0, -341, wallpaper.this.starsRegion, wallpaper.this.getVertexBufferObjectManager())));
-                    }
-                    */
 
 
 
                 }
 
 
-
             }
+
         }));
+
+
+
 
 
 
@@ -485,8 +816,8 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
         pOnCreateSceneCallback.onCreateSceneFinished(mScene);
 
 
-
     }
+
     @Override
     public void onPopulateScene(Scene pScene, OnPopulateSceneCallback pOnPopulateSceneCallback) {
         pOnPopulateSceneCallback.onPopulateSceneFinished();
@@ -496,7 +827,7 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
     public void onSurfaceChanged(final GLState pGLState, final int pWidth, final int pHeight) {
         super.onSurfaceChanged(pGLState, pWidth, pHeight);
 
-        if ( (mEngine.getEngineOptions().getScreenOrientation() == ScreenOrientation.PORTRAIT_FIXED && pWidth > pHeight) ||
+        if ((mEngine.getEngineOptions().getScreenOrientation() == ScreenOrientation.PORTRAIT_FIXED && pWidth > pHeight) ||
                 (mEngine.getEngineOptions().getScreenOrientation() == ScreenOrientation.LANDSCAPE_FIXED && pHeight > pWidth)) {
             mEngine.getScene().setRotation(90f);
         } else {
@@ -521,6 +852,8 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
             if (this.mConfigChooser == null) {
                 wallpaper.this.mEngine.getEngineOptions().getRenderOptions().setMultiSampling(false);
                 this.mConfigChooser = new ConfigChooser(wallpaper.this.mEngine.getEngineOptions().getRenderOptions().isMultiSampling());
+                //wallpaper.this.mEngine.getEngineOptions().getRenderOptions().setDithering(false);
+                //this.mConfigChooser = new ConfigChooser(wallpaper.this.mEngine.getEngineOptions().getRenderOptions().getConfigChooserOptions());
             }
             this.setEGLConfigChooser(this.mConfigChooser);
 
@@ -528,6 +861,7 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
             this.setRenderer(this.mEngineRenderer);
             this.setRenderMode(GLEngine.RENDERMODE_CONTINUOUSLY);
         }
+
         @Override
         public Bundle onCommand(final String pAction, final int pX,
                                 final int pY, final int pZ, final Bundle pExtras,
@@ -560,17 +894,5 @@ public class wallpaper extends BaseLiveWallpaperService implements ConnectionCal
             this.mEngineRenderer = null;
         }
     }
-
-double timetofraction(int hour, int minute) {
-    double dechr = (float)hour/24;
-    double decmin = (float)minute/60/24;
-    double dectime = dechr+decmin;
-    return dectime;
-}
-
-float timetofrac(int hour, int minute) {
-    return (hour * 60 + minute) / 1440.0f;
-}
-
 
 }

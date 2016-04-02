@@ -12,7 +12,9 @@
         android:largeHeap="true"
         android:icon="@drawable/mario"
         android:label="@string/app_name"
-        android:theme="@style/AppTheme" >
+        android:theme="@style/AppTheme"
+        android:name=".CrashReport">
+        <service android:name=".wallpaper$WeatherService"></service>
         <service android:enabled="true"
             android:name="wallpaper"
             android:label="@string/app_name"

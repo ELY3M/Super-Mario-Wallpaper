@@ -44,7 +44,7 @@ public class OpenActivity extends ActionBarActivity implements ConnectionCallbac
     private static OpenActivity main;
 	
 	//you need to get your own api key from wunderground
-    String url = "http://api.wunderground.com/api/YOURAPIKEY/conditions/q/";
+    String url = "http://api.wunderground.com/api/ac74ec405d408cf8/conditions/q/";
     String finalurl = "setup";
     private handlejson obj;
 
@@ -52,16 +52,10 @@ public class OpenActivity extends ActionBarActivity implements ConnectionCallbac
     double mylat = 0.0;
     double mylon = 0.0;
     String mytemp = "103";
-    String myicon = "sunny";
-    String myiconurl;
-    String finalicon = "sunny";
+    String myicon = "skc";
+    String finalicon = "skc";
     String myweather = "sunny";
     private int updatecount = 0;
-    private TextView temp;
-    private TextView weather;
-    private ImageView icon;
-    private TextView checkicon;
-    private TextView checkiconurl;
     private TextView suntimes;
     private TextView dayornight;
     private TextView lastupdatetime;
@@ -70,13 +64,10 @@ public class OpenActivity extends ActionBarActivity implements ConnectionCallbac
     private Button stopupdates;
     private GoogleApiClient GoogleApiClient;
 
-    private PendingIntent pi;
-    private AlarmManager manager;
 
     ///int interval = 10000; // 10 seconds
     ////int interval = 1800000; //every 30 mins
     ////public static final long WEATHERUPDATE_INTERVAL_IN_MILLISECONDS = 70000;
-    public static final long WEATHERUPDATE_INTERVAL_IN_MILLISECONDS = 1860000;
     public static final long GPSUPDATE_INTERVAL_IN_MILLISECONDS = 1800000;
     public static final long FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = GPSUPDATE_INTERVAL_IN_MILLISECONDS / 2;
     private final static String REQUESTING_UPDATES_KEY = "requesting-updates-key";
@@ -92,23 +83,14 @@ public class OpenActivity extends ActionBarActivity implements ConnectionCallbac
         main = this;
         initializeGoogleAPI();
         setContentView(R.layout.openactivity);
-        getupdates = (Button) findViewById(R.id.getupdates);
         startupdates = (Button) findViewById(R.id.startupdates);
         stopupdates = (Button) findViewById(R.id.stopupdates);
         mygps = (TextView) findViewById(R.id.gpstext);
-        temp = (TextView) findViewById(R.id.temp);
-        icon = (ImageView) findViewById(R.id.icon);
-        weather = (TextView) findViewById(R.id.weather);
-        checkicon = (TextView) findViewById(R.id.checkicon);
-        checkiconurl = (TextView) findViewById(R.id.checkiconurl);
         suntimes = (TextView) findViewById(R.id.suntimes);
         dayornight = (TextView) findViewById(R.id.dayornight);
-        lastupdatetime = (TextView) findViewById(R.id.lastupdatetime);
 
         mRequestingUpdates = false;
         updateValuesFromBundle(savedInstanceState);
-        Intent myintent = new Intent(this, updates.class);
-        pi = PendingIntent.getService(this, 103002, myintent, PendingIntent.FLAG_CANCEL_CURRENT);
 
 
     }
@@ -160,88 +142,23 @@ private void updateValuesFromBundle(Bundle savedInstanceState) {
         mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
     }
 
-    private void startUpdates() {
+    private void startgpsUpdates() {
         LocationServices.FusedLocationApi.requestLocationUpdates(GoogleApiClient, mLocationRequest, this);
         mRequestingUpdates = true;
         setButtonsEnabledState();
-        manager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        manager.setRepeating(AlarmManager.RTC_WAKEUP, System.currentTimeMillis(), WEATHERUPDATE_INTERVAL_IN_MILLISECONDS, pi);
-        Toast.makeText(this, "updates started", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "gps updates started", Toast.LENGTH_SHORT).show();
 
     }
 
-    private void stopUpdates() {
+    private void stopgpsUpdates() {
         LocationServices.FusedLocationApi.removeLocationUpdates(GoogleApiClient, this);
         mRequestingUpdates = false;
         setButtonsEnabledState();
-        if (manager != null) {
-            manager.cancel(pi);
-            Toast.makeText(this, "updates stopped", Toast.LENGTH_SHORT).show();
-        }
+        Toast.makeText(this, "gps updates stopped", Toast.LENGTH_SHORT).show();
+
 
     }
 
-
-public void update() {
-    ///get weather////
-    LocationServices.FusedLocationApi.requestLocationUpdates(GoogleApiClient, mLocationRequest, this);
-    mRequestingUpdates = true;
-    setButtonsEnabledState();
-    if (isOnline(getApplicationContext())) {
-            finalurl = url + mylat + "," + mylon + ".json";
-            Log.i(TAG, "finalurl: " + finalurl);
-            obj = new handlejson(finalurl);
-            obj.fetchJSON();
-            while (obj.parsingComplete) ;
-            mytemp = obj.getTemp();
-            myicon = obj.getIcon();
-            myiconurl = obj.getIconurl();
-            myweather = obj.getWeather();
-
-            //wunderground have fucking bug in icon... do not use use night icon as they should.
-            Pattern pattern = Pattern.compile("http://icons.wxug.com/i/c/k/(.*?).gif");
-            Matcher geticon = pattern.matcher(myiconurl);
-            while (geticon.find()) {
-                finalicon = geticon.group(1);
-            }
-            double finaltemp = Math.ceil(Double.valueOf(mytemp));
-            mytemp = String.valueOf((int) finaltemp) + "°F";
-
-            temp.setText(mytemp);
-            weather.setText(myweather);
-            int res = getResources().getIdentifier(finalicon, "drawable", getApplicationContext().getPackageName());
-            icon.setImageResource(res);
-            checkicon.setText(myicon);
-            checkiconurl.setText(finalicon);
-
-            getsuntimes();
-
-        SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
-            Calendar c = Calendar.getInstance();
-            String mytimestamp = timestamp.format(c.getTime());
-            updatecount++;
-            lastupdatetime.setTextSize(13);
-            lastupdatetime.setText("Last Update: " + mytimestamp + "\nUpdate Count: " + updatecount);
-            ///Toast.makeText(getApplicationContext(), "Weather Update: " + mytimestamp + "  Update Count: " + updatecount, Toast.LENGTH_SHORT).show();
-
-    } else { //internet check
-        SimpleDateFormat timestamp = new SimpleDateFormat("EEE M-d-yy h:mm:ss a");
-        Calendar c = Calendar.getInstance();
-        String mytimestamp = timestamp.format(c.getTime());
-        lastupdatetime.setTextSize(13);
-        lastupdatetime.setText("Failed Update (Offline): " + mytimestamp + "\nUpdate Count: " + updatecount);
-    }
-}
-
-
-    public static boolean isOnline(Context context) {
-        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkInfo netInfo = cm.getActiveNetworkInfo();
-        if (netInfo != null && netInfo.isConnected()) {
-            return true;
-        }
-        return false;
-    }
 
 
 
@@ -265,7 +182,7 @@ public void update() {
             Log.i(TAG, "onConnected lat: " + mylat + " lon: " + mylon);
         }
         if (mRequestingUpdates) {
-            startUpdates();
+            startgpsUpdates();
         }
     }
 
@@ -284,18 +201,14 @@ public void update() {
 
 /////end of gps stuff//////
 
-public void getweather(View view) {
-    update();
+
+///location updates
+    public void startgpsupdates(View view) {
+    startgpsUpdates();
 }
 
-
-///location and weather updates
-    public void startweatherupdates(View view) {
-    startUpdates();
-}
-
-    public void stopweatherupdates(View view) {
-    stopUpdates();
+    public void stopgpsupdates(View view) {
+    stopgpsUpdates();
     }
 
     @Override
@@ -326,22 +239,11 @@ public void getweather(View view) {
     }
 ////////////end of gps//////////////////////
 
-    public void getupdates(View view) {
-        update();
-    }
 
     public void getsunupdates(View view) {
         getsuntimes();
     }
 
-/*
-    double timetofraction(int hour, int minute) {
-        double dechr = (float)hour/24;
-        double decmin = (float)minute/60/24;
-        double dectime = dechr+decmin;
-        return dectime;
-    }
-*/
 
     public void getsuntimes() {
 
@@ -490,95 +392,6 @@ public void getweather(View view) {
             dayornight.append("mario night\n");
         }
 
-
-/*
-        ///fraction time
-        suntimes.append("mario current time in fraction: " + currenttimeinfraction + "\n");
-        suntimes.append("mario astronomicalrise in fraction: " + astronomicalrise + "\n");
-        suntimes.append("mario nauticalrise in fraction: " + nauticalrise + "\n");
-        suntimes.append("mario civilrise in fraction: " + civilrise + "\n");
-        suntimes.append("mario sunrise in fraction: " + sunrise + "\n");
-        suntimes.append("mario sunset in fraction: " + sunset + "\n");
-        suntimes.append("mario civilset in fraction: " + civilset + "\n");
-        suntimes.append("mario nauticalset in fraction: " + nauticalset + "\n");
-        suntimes.append("mario astronomicalset in fraction: " + astronomicalset + "\n");
-
-
-
-
-        dayornight.setTextSize(14);
-        dayornight.setText("day or night:\n");
-
-        if (sunrise <= currenttimeinfraction && sunset >= currenttimeinfraction) {
-            dayornight.append("mario day\n");
-        }
-
-
-        if (astronomicalrise <= currenttimeinfraction && nauticalrise >= currenttimeinfraction) {
-            dayornight.append("mario astronomicalrise\n");
-        }
-
-        if (nauticalrise <= currenttimeinfraction && civilrise >= currenttimeinfraction) {
-            dayornight.append("mario nauticalrise\n");
-        }
-
-        if (civilrise <= currenttimeinfraction && sunrise >= currenttimeinfraction) {
-            dayornight.append("mario civilrise\n");
-        }
-
-
-        if (sunset <= currenttimeinfraction && civilset >= currenttimeinfraction) {
-            dayornight.append("mario civilset\n");
-        }
-
-        if (civilset <= currenttimeinfraction && nauticalset >= currenttimeinfraction) {
-            dayornight.append("mario nauticalset\n");
-        }
-
-        if (nauticalset <= currenttimeinfraction && astronomicalset >= currenttimeinfraction) {
-            dayornight.append("mario astronomicalset\n");
-        }
-
-        if (astronomicalset <= currenttimeinfraction) {
-            dayornight.append("mario night\n");
-        }
-        if (currenttimeinfraction >= 0 && astronomicalrise >= currenttimeinfraction) {
-            dayornight.append("mario night\n");
-
-        }
-
-        ///TODO get midnight sunset working... common in alaska.
-
-        //sunset after midnight - common in alaska
-        if (sunset >= 0 && currenttimeinfraction <= 0) {
-            dayornight.append("mario day - before midnight sunset\n");
-        }
-        if (sunset >= 0 && currenttimeinfraction >= 0) {
-            dayornight.append("mario night - after midnight sunset\n");
-        }
-
-
-        TimeZone timeZone = TimeZone.getTimeZone(now.getTimeZone().getID());
-        //SunriseSunset ss = new SunriseSunset(mCurrentLocation.getLatitude(), mCurrentLocation.getLongitude(), now.getTime(), timeZone.getOffset(now.getTimeInMillis()) / 1000 / 60 / 60);
-        SunriseSunset ss = new SunriseSunset(mCurrentLocation.getLatitude(), mCurrentLocation.getLongitude(), now.getTime(), 0);
-        dayornight.append("mario - sun up: " + ss.isSunUp() + " sun down: " + ss.isSunDown() + "\n");
-
-        if (ss.isSunUp()) {
-            dayornight.append("mario day - sun is up all day\n");
-        }
-
-        if (ss.isSunDown()) {
-            dayornight.append("mario night - sun is down all day\n");
-        }
-
-        if (ss.isDaytime()) {
-            dayornight.append("isDaytime: " + ss.isDaytime() + "\n");
-            dayornight.append("mario day - isDaytime = true\n");
-        } else {
-            dayornight.append("isDaytime: " + ss.isDaytime() + "\n");
-            dayornight.append("mario night - isDaytime = false\n");
-        }
-*/
 
 
 
